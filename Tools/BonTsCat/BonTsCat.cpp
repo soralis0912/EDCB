@@ -4,8 +4,8 @@
 //
 // 引数:
 // -d bondriver
-//   BonDriverのファイル名またはパス。ファイル名のみのときはコマンドと同じ場所の"BonDriver"フォルダ、
-//   次にコマンドと同じ場所から探す。
+//   BonDriverのファイル名またはパス。ファイル名のみのときはコマンドと同じ場所の"BonDriver"フォルダに
+//   あるものを使う(EDCBと同じ)。
 // -s space, range>=0, default=0
 //   チューナー空間の番号。
 // -c ch|space/ch
@@ -172,13 +172,8 @@ void ResolveBonDriverPath(const wstring& arg, wstring& folder, wstring& file)
 		file = path.filename().native();
 		return;
 	}
+	folder = GetModulePath().replace_filename(L"BonDriver").native();
 	file = arg;
-	fs_path defFolder = GetModulePath().replace_filename(L"BonDriver");
-	if( UtilFileExists(fs_path(defFolder).append(file)).first ){
-		folder = defFolder.native();
-	}else{
-		folder = GetModulePath().parent_path().native();
-	}
 }
 }
 
