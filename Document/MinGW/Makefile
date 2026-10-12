@@ -42,6 +42,13 @@ tspgtxt.exe: ../../BonCtrl/PacketInit.cpp \
              ../../Common/TSPacketUtil.cpp \
              ../../Tools/tspgtxt/tspgtxt.cpp
 	$(CXX) -municode -Wl,-s -static-libgcc -static-libstdc++ -I../../Tools/tspgtxt -D_UNICODE -std=c++17 -pedantic-errors -Os -o $@ $+
-tools: asyncbuf.exe relayread.exe tsidmove.exe tspgtxt.exe
+BonTsCat.exe: ../../BonCtrl/BonDriverUtil.cpp \
+              ../../Common/MessageManager.cpp \
+              ../../Common/PathUtil.cpp \
+              ../../Common/StringUtil.cpp \
+              ../../Common/TimeUtil.cpp \
+              ../../Tools/BonTsCat/BonTsCat.cpp
+	$(CXX) -municode -Wl,-s -static-libgcc -static-libstdc++ -I../../Tools/BonTsCat -D_UNICODE -DUNICODE -std=c++17 -pedantic-errors -Os -o $@ $+ -lole32
+tools: asyncbuf.exe relayread.exe tsidmove.exe tspgtxt.exe BonTsCat.exe
 clean_tools:
-	$(RM) asyncbuf.exe relayread.exe tsidmove.exe tspgtxt.exe
+	$(RM) asyncbuf.exe relayread.exe tsidmove.exe tspgtxt.exe BonTsCat.exe
