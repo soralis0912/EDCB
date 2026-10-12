@@ -73,8 +73,19 @@ void SignalHandler(int)
 }
 #endif
 
+//コンソールにはそのまま、パイプやファイルにはUTF-8で出力する
 void PrintUtf8(FILE* fp, const wstring& s)
 {
+#ifdef _WIN32
+	HANDLE h = (HANDLE)_get_osfhandle(_fileno(fp));
+	DWORD mode;
+	if( h != INVALID_HANDLE_VALUE && GetConsoleMode(h, &mode) ){
+		fflush(fp);
+		DWORD written;
+		WriteConsoleW(h, s.c_str(), (DWORD)s.size(), &written, NULL);
+		return;
+	}
+#endif
 	string u;
 	WtoUTF8(s, u);
 	fputs(u.c_str(), fp);
