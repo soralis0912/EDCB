@@ -20,6 +20,12 @@
     <ClInclude Include="..\..\BonCtrl\IBonDriver2.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\BonCtrl\IB25Decoder.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\BonCtrl\ScrambleDecoderUtil.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\Common\Common.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -44,6 +50,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\..\BonCtrl\BonDriverUtil.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\BonCtrl\ScrambleDecoderUtil.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="..\..\Common\MessageManager.cpp">

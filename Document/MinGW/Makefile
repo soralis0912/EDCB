@@ -43,6 +43,7 @@ tspgtxt.exe: ../../BonCtrl/PacketInit.cpp \
              ../../Tools/tspgtxt/tspgtxt.cpp
 	$(CXX) -municode -Wl,-s -static-libgcc -static-libstdc++ -I../../Tools/tspgtxt -D_UNICODE -std=c++17 -pedantic-errors -Os -o $@ $+
 BonTsCat.exe: ../../BonCtrl/BonDriverUtil.cpp \
+              ../../BonCtrl/ScrambleDecoderUtil.cpp \
               ../../Common/MessageManager.cpp \
               ../../Common/PathUtil.cpp \
               ../../Common/StringUtil.cpp \

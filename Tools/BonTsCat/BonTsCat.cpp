@@ -19,16 +19,23 @@
 //   BonDriverのOpen後、チャンネル変更までの待ち時間。
 // -b buffer_mb, range>=1, default=64
 //   出力が詰まったときに溜めておく最大量。超えた分は破棄する。
+// -B b25decoder
+//   スクランブル解除に使うB25Decoder互換DLLのファイル名またはパス。ファイル名のみのときはコマンドと
+//   同じ場所から探す。未指定のときはスクランブル解除しない。
+// -e
+//   -Bのデコーダで EMM 処理を有効にする。
 // -l
 //   チューナー空間とチャンネルの一覧を標準出力(UTF-8)して終了する。
 // -v
 //   受信状況(シグナルレベルなど)を標準エラー出力する。
 //
 // 終了コード:
-// 0: 正常終了, 1: 引数エラー, 2: BonDriverのOpen失敗, 3: チャンネル変更失敗, 4: 出力ファイルのOpen失敗
+// 0: 正常終了, 1: 引数エラー, 2: BonDriverのOpen失敗, 3: チャンネル変更失敗, 4: 出力ファイルのOpen失敗,
+// 5: B25Decoderのロード失敗
 //
 #include "stdafx.h"
 #include "../../BonCtrl/BonDriverUtil.h"
+#include "../../BonCtrl/ScrambleDecoderUtil.h"
 #include "../../Common/PathUtil.h"
 #include "../../Common/StringUtil.h"
 #include "../../Common/TimeUtil.h"
@@ -75,7 +82,7 @@ void PrintUtf8(FILE* fp, const wstring& s)
 
 void PrintUsage()
 {
-	fputs("Usage: BonTsCat -d bondriver [-s space] [-c ch|space/ch] [-t duration_sec|-] [-o dest|-] [-w open_wait_msec] [-b buffer_mb] [-l] [-v]\n", stderr);
+	fputs("Usage: BonTsCat -d bondriver [-s space] [-c ch|space/ch] [-t duration_sec|-] [-o dest|-] [-w open_wait_msec] [-b buffer_mb] [-B b25decoder [-e]] [-l] [-v]\n", stderr);
 }
 
 bool ParseInt(const wstring& s, int& val)
@@ -123,6 +130,23 @@ private:
 	CAutoResetEvent event;
 };
 
+//デコーダのDLLを直接指定してロードする
+class CScrambleDecoder : public CScrambleDecoderUtil
+{
+public:
+	using CScrambleDecoderUtil::LoadDll;
+};
+
+//DLLのパスを決める(ファイル名のみのときはコマンドと同じ場所)
+wstring ResolveModulePath(const wstring& arg)
+{
+	fs_path path(arg);
+	if( path.has_parent_path() ){
+		return arg;
+	}
+	return GetModulePath().replace_filename(arg).native();
+}
+
 struct CFileCloser
 {
 	void operator()(FILE* fp) { fclose(fp); }
@@ -162,6 +186,8 @@ int main(int argc, char** argv)
 	int bufferMB = 64;
 	bool listMode = false;
 	bool verbose = false;
+	wstring decoderDll;
+	bool emm = false;
 	for( int i = 1; i < argc; i++ ){
 #ifdef _WIN32
 		wstring s = argv[i];
@@ -179,6 +205,11 @@ int main(int argc, char** argv)
 			listMode = true;
 		}else if( s == L"-v" ){
 			verbose = true;
+		}else if( s == L"-e" ){
+			emm = true;
+		}else if( hasValue && s == L"-B" ){
+			decoderDll = v;
+			i++;
 		}else if( hasValue && s == L"-d" ){
 			bonDriver = v;
 			i++;
@@ -228,9 +259,30 @@ int main(int argc, char** argv)
 			return 1;
 		}
 	}
-	if( bonDriver.empty() || (listMode == false && ch < 0) ){
+	if( bonDriver.empty() || (listMode == false && ch < 0) || (emm && decoderDll.empty()) ){
 		PrintUsage();
 		return 1;
+	}
+
+	//チューナーを開く前にデコーダを準備しておく
+	CScrambleDecoder decoder;
+	if( listMode == false && decoderDll.empty() == false ){
+		wstring decoderPath = ResolveModulePath(decoderDll);
+		if( decoder.LoadDll(decoderPath) == FALSE ){
+			fputs("Error: failed to load the B25 decoder: ", stderr);
+			PrintUtf8(stderr, decoderPath);
+			fputs("\n", stderr);
+			return 5;
+		}
+		if( emm ){
+			//SetEmm()はロード後でないと反映されない
+			decoder.SetEmm(TRUE);
+		}
+		if( verbose ){
+			fputs("Decoder: ", stderr);
+			PrintUtf8(stderr, decoderPath);
+			fputs(emm ? " (EMM enabled)\n" : "\n", stderr);
+		}
 	}
 
 	CAutoResetEvent stopEvent;
@@ -335,15 +387,23 @@ int main(int argc, char** argv)
 		if( dropped > 0 ){
 			fprintf(stderr, "Warning: dropped %lld bytes due to slow output.\n", dropped);
 		}
-		if( data.empty() == false ){
-			if( fwrite(data.data(), 1, data.size(), fp) != data.size() || fflush(fp) != 0 ){
+		BYTE* outData = data.data();
+		DWORD outSize = (DWORD)data.size();
+		if( decoderDll.empty() == false && data.empty() == false ){
+			if( decoder.Decode(data.data(), (DWORD)data.size(), &outData, &outSize) == FALSE ){
+				//デコーダ内部で溜めている場合などは出力がないことがある
+				outSize = 0;
+			}
+		}
+		if( outSize != 0 ){
+			if( fwrite(outData, 1, outSize, fp) != outSize || fflush(fp) != 0 ){
 				//出力先が閉じられた
 				if( verbose ){
 					fputs("Output closed.\n", stderr);
 				}
 				break;
 			}
-			totalBytes += data.size();
+			totalBytes += outSize;
 		}
 		if( g_stopFlag ){
 			if( verbose ){

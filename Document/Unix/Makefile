@@ -39,6 +39,7 @@ tspgtxt: ../../BonCtrl/PacketInit.cpp \
          ../../Tools/tspgtxt/tspgtxt.cpp
 	$(CXX) -Wl,-s -I../../Tools/tspgtxt -std=c++17 -pedantic-errors -Os -o $@ $+
 bontscat: ../../BonCtrl/BonDriverUtil.cpp \
+          ../../BonCtrl/ScrambleDecoderUtil.cpp \
           ../../Common/MessageManager.cpp \
           ../../Common/PathUtil.cpp \
           ../../Common/StringUtil.cpp \

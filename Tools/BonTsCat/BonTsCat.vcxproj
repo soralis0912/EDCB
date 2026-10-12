@@ -171,6 +171,8 @@
     <ClInclude Include="..\..\BonCtrl\BonDriverUtil.h" />
     <ClInclude Include="..\..\BonCtrl\IBonDriver.h" />
     <ClInclude Include="..\..\BonCtrl\IBonDriver2.h" />
+    <ClInclude Include="..\..\BonCtrl\IB25Decoder.h" />
+    <ClInclude Include="..\..\BonCtrl\ScrambleDecoderUtil.h" />
     <ClInclude Include="..\..\Common\Common.h" />
     <ClInclude Include="..\..\Common\MessageManager.h" />
     <ClInclude Include="..\..\Common\PathUtil.h" />
@@ -181,6 +183,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\..\BonCtrl\BonDriverUtil.cpp" />
+    <ClCompile Include="..\..\BonCtrl\ScrambleDecoderUtil.cpp" />
     <ClCompile Include="..\..\Common\MessageManager.cpp" />
     <ClCompile Include="..\..\Common\PathUtil.cpp" />
     <ClCompile Include="..\..\Common\StringUtil.cpp" />
