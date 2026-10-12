@@ -17,6 +17,9 @@
 //   出力ファイル名、または"-"で標準出力。
 // -w open_wait_msec, range>=0, default=200
 //   BonDriverのOpen後、チャンネル変更までの待ち時間。
+// -i ignore_msec, range>=0, default=1000
+//   チャンネル変更直後に受信したデータを捨てる時間。チャンネル変更前のパケットが来ることがあるため
+//   (EDCBと同じ)。その後、最初のPATから出力する。
 // -b buffer_mb, range>=1, default=64
 //   出力が詰まったときに溜めておく最大量。超えた分は破棄する。
 // -B b25decoder
@@ -93,7 +96,7 @@ void PrintUtf8(FILE* fp, const wstring& s)
 
 void PrintUsage()
 {
-	fputs("Usage: BonTsCat -d bondriver [-s space] [-c ch|space/ch] [-t duration_sec|-] [-o dest|-] [-w open_wait_msec] [-b buffer_mb] [-B b25decoder [-e]] [-l] [-v]\n", stderr);
+	fputs("Usage: BonTsCat -d bondriver [-s space] [-c ch|space/ch] [-t duration_sec|-] [-o dest|-] [-w open_wait_msec] [-i ignore_msec] [-b buffer_mb] [-B b25decoder [-e]] [-l] [-v]\n", stderr);
 }
 
 bool ParseInt(const wstring& s, int& val)
@@ -239,6 +242,28 @@ void DiagnoseBonDriver(const wstring& path)
 }
 #endif
 
+//PAT(PID=0)のセクション先頭を含むパケットの位置を探す。見つからなければ-1
+ptrdiff_t FindPatStart(const BYTE* data, size_t size)
+{
+	for( size_t i = 0; i + 188 <= size; i++ ){
+		//同期バイトが188バイト間隔で続く位置だけを見る
+		if( data[i] == 0x47 && (i + 188 * 2 > size || data[i + 188] == 0x47) ){
+			for( size_t j = i; j + 188 <= size; j += 188 ){
+				if( data[j] != 0x47 ){
+					break;
+				}
+				WORD pid = (WORD)((data[j + 1] & 0x1F) << 8 | data[j + 2]);
+				bool pusi = (data[j + 1] & 0x40) != 0;
+				if( pid == 0 && pusi ){
+					return (ptrdiff_t)j;
+				}
+			}
+			return -1;
+		}
+	}
+	return -1;
+}
+
 struct CFileCloser
 {
 	void operator()(FILE* fp) { fclose(fp); }
@@ -270,6 +295,7 @@ int main(int argc, char** argv)
 	int durationSec = 0;
 	wstring destPath = L"-";
 	int openWait = 200;
+	int ignoreMsec = 1000;
 	int bufferMB = 64;
 	bool listMode = false;
 	bool verbose = false;
@@ -328,6 +354,12 @@ int main(int argc, char** argv)
 			i++;
 		}else if( hasValue && s == L"-o" ){
 			destPath = v;
+			i++;
+		}else if( hasValue && s == L"-i" ){
+			if( ParseInt(v, ignoreMsec) == false || ignoreMsec < 0 ){
+				fputs("Error: invalid ignore time.\n", stderr);
+				return 1;
+			}
 			i++;
 		}else if( hasValue && s == L"-w" ){
 			if( ParseInt(v, openWait) == false || openWait < 0 ){
@@ -395,11 +427,21 @@ int main(int argc, char** argv)
 	SetDllDirectoryW(bonFolder.c_str());
 #endif
 
+	//チャンネル変更直後のデータを捨てるための状態(ドライバのスレッドから参照する)
+	atomic_bool_ ignoring(true);
+	atomic_int_ chChangeTick(0);
+
 	CBonDriverUtil bonUtil;
 	if( bonUtil.OpenBonDriver(bonFolder.c_str(), bonFile.c_str(),
 	                          [&](BYTE* data, DWORD size, DWORD remain) {
 	                              (void)remain;
 	                              if( data && size != 0 ){
+	                                  if( ignoring ){
+	                                      if( (int)(GetU32Tick() - (DWORD)(int)chChangeTick) < ignoreMsec ){
+	                                          return;
+	                                      }
+	                                      ignoring = false;
+	                                  }
 	                                  tsBuff.Push(data, size);
 	                              }
 	                          },
@@ -440,10 +482,19 @@ int main(int argc, char** argv)
 	if( openWait > 0 ){
 		SleepForMsec(openWait);
 	}
+	chChangeTick = (int)GetU32Tick();
+	ignoring = true;
 	if( bonUtil.SetCh(space, ch) == false ){
 		fprintf(stderr, "Error: failed to set the channel: %d/%d\n", space, ch);
 		bonUtil.CloseBonDriver();
 		return 3;
+	}
+	//チャンネル変更が終わってから数える
+	chChangeTick = (int)GetU32Tick();
+	{
+		vector<BYTE> discard;
+		LONGLONG discardDropped;
+		tsBuff.Pop(discard, discardDropped);
 	}
 	if( verbose ){
 		fprintf(stderr, "Channel: %d/%d\n", space, ch);
@@ -470,6 +521,9 @@ int main(int argc, char** argv)
 	DWORD lastStatusTick = startTick;
 	LONGLONG totalBytes = 0;
 	vector<BYTE> data;
+	//最初のPATから出力する(5秒以内に見つからなければそのまま出力する)
+	bool waitPat = true;
+	DWORD waitPatTick = 0;
 	for( ;; ){
 #ifdef _WIN32
 		HANDLE handles[] = { tsBuff.Event().Handle(), stopEvent.Handle() };
@@ -481,6 +535,20 @@ int main(int argc, char** argv)
 		tsBuff.Pop(data, dropped);
 		if( dropped > 0 ){
 			fprintf(stderr, "Warning: dropped %lld bytes due to slow output.\n", dropped);
+		}
+		if( waitPat && data.empty() == false ){
+			if( waitPatTick == 0 ){
+				waitPatTick = GetU32Tick();
+			}
+			ptrdiff_t pos = FindPatStart(data.data(), data.size());
+			if( pos >= 0 ){
+				data.erase(data.begin(), data.begin() + pos);
+				waitPat = false;
+			}else if( GetU32Tick() - waitPatTick < 5000 ){
+				data.clear();
+			}else{
+				waitPat = false;
+			}
 		}
 		BYTE* outData = data.data();
 		DWORD outSize = (DWORD)data.size();
