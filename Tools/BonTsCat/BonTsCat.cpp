@@ -158,6 +158,87 @@ wstring ResolveModulePath(const wstring& arg)
 	return GetModulePath().replace_filename(arg).native();
 }
 
+#ifdef _WIN32
+//BonDriverを開けなかった理由を調べて表示する
+void DiagnoseBonDriver(const wstring& path)
+{
+	if( UtilFileExists(path).first == false ){
+		PrintUtf8(stderr, L"  原因: ファイルがありません。BonDriverフォルダに置いたか、ファイル名が正しいか確認してください。\n");
+		return;
+	}
+	//実行ファイルのCPU種別を調べる
+	std::unique_ptr<FILE, decltype(&fclose)> fp(UtilOpenFile(path, UTIL_SECURE_READ), fclose);
+	BYTE header[4096] = {};
+	size_t headerSize = fp ? fread(header, 1, sizeof(header), fp.get()) : 0;
+	fp.reset();
+	WORD machine = 0;
+	if( headerSize >= 0x40 && header[0] == 'M' && header[1] == 'Z' ){
+		DWORD peOffset = header[0x3C] | header[0x3D] << 8 | header[0x3E] << 16 | (DWORD)header[0x3F] << 24;
+		if( peOffset + 6 <= headerSize && memcmp(header + peOffset, "PE\0\0", 4) == 0 ){
+			machine = (WORD)(header[peOffset + 4] | header[peOffset + 5] << 8);
+		}
+	}
+#ifdef _WIN64
+	const WORD expectedMachine = IMAGE_FILE_MACHINE_AMD64;
+	LPCWSTR expectedName = L"64bit (x64)";
+#else
+	const WORD expectedMachine = IMAGE_FILE_MACHINE_I386;
+	LPCWSTR expectedName = L"32bit (x86)";
+#endif
+	if( machine != expectedMachine ){
+		PrintUtf8(stderr, wstring(L"  原因: このBonDriverは") +
+		                  (machine == IMAGE_FILE_MACHINE_I386 ? L"32bit (x86)" : machine == IMAGE_FILE_MACHINE_AMD64 ? L"64bit (x64)" : L"不明な形式") +
+		                  L"です。" + expectedName + L"版のBonDriverが必要です。\n");
+		return;
+	}
+	HMODULE h = LoadLibraryW(path.c_str());
+	if( h == NULL ){
+		DWORD err = GetLastError();
+		WCHAR buff[64];
+		swprintf_s(buff, L"%lu", err);
+		PrintUtf8(stderr, wstring(L"  原因: DLLを読み込めません (エラー ") + buff + L")。\n");
+		//読み込めない依存DLLを列挙する
+		HMODULE image = LoadLibraryExW(path.c_str(), NULL, DONT_RESOLVE_DLL_REFERENCES);
+		if( image ){
+			const BYTE* base = (const BYTE*)image;
+			const IMAGE_NT_HEADERS* nt = (const IMAGE_NT_HEADERS*)(base + ((const IMAGE_DOS_HEADER*)base)->e_lfanew);
+			const IMAGE_DATA_DIRECTORY& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+			if( dir.VirtualAddress != 0 ){
+				for( const IMAGE_IMPORT_DESCRIPTOR* desc = (const IMAGE_IMPORT_DESCRIPTOR*)(base + dir.VirtualAddress); desc->Name != 0; desc++ ){
+					LPCSTR name = (LPCSTR)(base + desc->Name);
+					//APIセット(api-ms-*,ext-ms-*)はOSが解決するので調べない
+					if( _strnicmp(name, "api-ms-", 7) == 0 || _strnicmp(name, "ext-ms-", 7) == 0 ){
+						continue;
+					}
+					HMODULE dep = LoadLibraryExA(name, NULL, LOAD_LIBRARY_AS_DATAFILE);
+					if( dep ){
+						FreeLibrary(dep);
+					}else{
+						wstring wname;
+						UTF8toW(name, wname);
+						PrintUtf8(stderr, L"  見つからない依存DLL: " + wname + L"\n");
+						if( _wcsnicmp(wname.c_str(), L"msvcp", 5) == 0 || _wcsnicmp(wname.c_str(), L"vcruntime", 9) == 0 ){
+							PrintUtf8(stderr, wstring(L"    → Visual C++ 再頒布可能パッケージ (") + expectedName + L") をインストールしてください。\n");
+						}
+					}
+				}
+			}
+			FreeLibrary(image);
+		}
+		PrintUtf8(stderr, L"  依存DLLがBonDriverと同じフォルダにある場合は、そこに置いたままで構いません。\n");
+		return;
+	}
+	bool isBonDriver = GetProcAddress(h, "CreateBonDriver") != NULL || GetProcAddress(h, "CreateBonStruct") != NULL;
+	FreeLibrary(h);
+	if( isBonDriver == false ){
+		PrintUtf8(stderr, L"  原因: BonDriverではないDLLです (CreateBonDriverがありません)。\n");
+		return;
+	}
+	PrintUtf8(stderr, L"  原因: DLLは読み込めましたが、チューナーを開けませんでした (OpenTuner失敗)。\n"
+	                  L"        他のソフト (TVTestなど) がチューナーを使用中でないか、ドライバやiniの設定を確認してください。\n");
+}
+#endif
+
 struct CFileCloser
 {
 	void operator()(FILE* fp) { fclose(fp); }
@@ -309,6 +390,11 @@ int main(int argc, char** argv)
 	wstring bonFile;
 	ResolveBonDriverPath(bonDriver, bonFolder, bonFile);
 
+#ifdef _WIN32
+	//BonDriverが依存するDLLをBonDriverフォルダからも探せるようにする
+	SetDllDirectoryW(bonFolder.c_str());
+#endif
+
 	CBonDriverUtil bonUtil;
 	if( bonUtil.OpenBonDriver(bonFolder.c_str(), bonFile.c_str(),
 	                          [&](BYTE* data, DWORD size, DWORD remain) {
@@ -324,6 +410,9 @@ int main(int argc, char** argv)
 		fputs("Error: failed to open the BonDriver: ", stderr);
 		PrintUtf8(stderr, fs_path(bonFolder).append(bonFile).native());
 		fputs("\n", stderr);
+#ifdef _WIN32
+		DiagnoseBonDriver(fs_path(bonFolder).append(bonFile).native());
+#endif
 		return 2;
 	}
 	if( verbose ){
